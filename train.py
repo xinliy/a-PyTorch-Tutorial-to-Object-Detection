@@ -3,27 +3,20 @@ import torch.backends.cudnn as cudnn
 import torch.optim
 import torch.utils.data
 from model import SSD300, MultiBoxLoss
-from datasets import PascalVOCDataset
+from datasets import ImageDataset
 from utils import *
+from model_params import data_folder,static_data_folder,keep_difficult,depth_mode,device,n_classes
 
-# Data parameters
-data_folder = './'  # folder with data files
-keep_difficult = True  # use objects considered difficult to detect?
-
-# Model parameters
-# Not too many here since the SSD300 has a very specific structure
-n_classes = len(label_map)  # number of different types of objects
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 # Learning parameters
 checkpoint = None  # path to model checkpoint, None if none
-batch_size = 8  # batch size
+batch_size = 16  # batch size
 start_epoch = 0  # start at this epoch
-epochs = 200  # number of epochs to run without early-stopping
+epochs = 10  # number of epochs to run without early-stopping
 epochs_since_improvement = 0  # number of epochs since there was an improvement in the validation metric
 best_loss = 100.  # assume a high loss at first
 workers = 4  # number of workers for loading data in the DataLoader
-print_freq = 200  # print training or validation status every __ batches
+print_freq = 1  # print training or validation status every __ batches
 lr = 1e-3  # learning rate
 momentum = 0.9  # momentum
 weight_decay = 5e-4  # weight decay
@@ -52,6 +45,7 @@ def main():
                     not_biases.append(param)
         optimizer = torch.optim.SGD(params=[{'params': biases, 'lr': 2 * lr}, {'params': not_biases}],
                                     lr=lr, momentum=momentum, weight_decay=weight_decay)
+        # optimizer=torch.optim.SGD(params=model.parameters(),lr=0.001,momentum=0.9)
 
     else:
         checkpoint = torch.load(checkpoint)
@@ -67,12 +61,12 @@ def main():
     criterion = MultiBoxLoss(priors_cxcy=model.priors_cxcy).to(device)
 
     # Custom dataloaders
-    train_dataset = PascalVOCDataset(data_folder,
-                                     split='train',
-                                     keep_difficult=keep_difficult)
-    val_dataset = PascalVOCDataset(data_folder,
-                                   split='test',
-                                   keep_difficult=keep_difficult)
+    train_dataset = ImageDataset(data_folder,
+                                 split='train',
+                                 keep_difficult=keep_difficult)
+    val_dataset = ImageDataset(static_data_folder,
+                               split='test',
+                               keep_difficult=keep_difficult)
     train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
                                                collate_fn=train_dataset.collate_fn, num_workers=workers,
                                                pin_memory=True)  # note that we're passing the collate function here
@@ -81,17 +75,6 @@ def main():
                                              pin_memory=True)
     # Epochs
     for epoch in range(start_epoch, epochs):
-        # Paper describes decaying the learning rate at the 80000th, 100000th, 120000th 'iteration', i.e. model update or batch
-        # The paper uses a batch size of 32, which means there were about 517 iterations in an epoch
-        # Therefore, to find the epochs to decay at, you could do,
-        # if epoch in {80000 // 517, 100000 // 517, 120000 // 517}:
-        #     adjust_learning_rate(optimizer, 0.1)
-
-        # In practice, I just decayed the learning rate when loss stopped improving for long periods,
-        # and I would resume from the last best checkpoint with the new learning rate,
-        # since there's no point in resuming at the most recent and significantly worse checkpoint.
-        # So, when you're ready to decay the learning rate, just set checkpoint = 'BEST_checkpoint_ssd300.pth.tar' above
-        # and have adjust_learning_rate(optimizer, 0.1) BEFORE this 'for' loop
 
         # One epoch's training
         train(train_loader=train_loader,
@@ -104,8 +87,8 @@ def main():
         val_loss = validate(val_loader=val_loader,
                             model=model,
                             criterion=criterion)
-
-        # Did validation loss improve?
+        #
+        # # Did validation loss improve?
         is_best = val_loss < best_loss
         best_loss = min(val_loss, best_loss)
 
@@ -117,7 +100,7 @@ def main():
             epochs_since_improvement = 0
 
         # Save checkpoint
-        save_checkpoint(epoch, epochs_since_improvement, model, optimizer, val_loss, best_loss, is_best)
+        save_checkpoint(epoch, epochs_since_improvement, model, optimizer, val_loss, best_loss, is_best,depth_mode)
 
 
 def train(train_loader, model, criterion, optimizer, epoch):
@@ -139,11 +122,15 @@ def train(train_loader, model, criterion, optimizer, epoch):
     start = time.time()
 
     # Batches
-    for i, (images, boxes, labels, _) in enumerate(train_loader):
+    for i, (images, depth_images,boxes, labels, _,o) in enumerate(train_loader):
         data_time.update(time.time() - start)
 
         # Move to default device
         images = images.to(device)  # (batch_size (N), 3, 300, 300)
+        if depth_mode is True:
+            depth_images=depth_images.to(device)
+            images=torch.cat((images,depth_images),dim=1)
+        # print(images.shape)
         boxes = [b.to(device) for b in boxes]
         labels = [l.to(device) for l in labels]
 
@@ -199,10 +186,13 @@ def validate(val_loader, model, criterion):
     # Prohibit gradient computation explicity because I had some problems with memory
     with torch.no_grad():
         # Batches
-        for i, (images, boxes, labels, difficulties) in enumerate(val_loader):
+        for i, (images, depth_images,boxes, labels, difficulties,o) in enumerate(val_loader):
 
             # Move to default device
             images = images.to(device)  # (N, 3, 300, 300)
+            if depth_mode is True:
+                depth_images=depth_images.to(device)
+                images=torch.cat((images,depth_images),dim=1)
             boxes = [b.to(device) for b in boxes]
             labels = [l.to(device) for l in labels]
 

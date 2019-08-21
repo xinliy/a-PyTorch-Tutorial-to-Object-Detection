@@ -6,11 +6,11 @@ import xml.etree.ElementTree as ET
 import torchvision.transforms.functional as FT
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 # Label map
-voc_labels = ('aeroplane', 'bicycle', 'bird', 'boat', 'bottle', 'bus', 'car', 'cat', 'chair', 'cow', 'diningtable',
-              'dog', 'horse', 'motorbike', 'person', 'pottedplant', 'sheep', 'sofa', 'train', 'tvmonitor')
-label_map = {k: v + 1 for v, k in enumerate(voc_labels)}
+with open("custom_data/label_map.json",'r') as j:
+    dataset_labels=list(json.load(j).keys())
+dataset_labels.remove("background")
+label_map = {k: v + 1 for v, k in enumerate(dataset_labels)}
 label_map['background'] = 0
 rev_label_map = {v: k for k, v in label_map.items()}  # Inverse mapping
 
@@ -68,7 +68,7 @@ def create_data_lists(voc07_path, voc12_path, output_folder):
     for path in [voc07_path, voc12_path]:
 
         # Find IDs of images in training data
-        with open(os.path.join(path, 'ImageSets/Main/trainval.txt')) as f:
+        with open(os.path.join(path, 'ImageSets\\Main\\trainval.txt')) as f:
             ids = f.read().splitlines()
 
         for id in ids:
@@ -99,7 +99,7 @@ def create_data_lists(voc07_path, voc12_path, output_folder):
     n_objects = 0
 
     # Find IDs of images in validation data
-    with open(os.path.join(voc07_path, 'ImageSets/Main/test.txt')) as f:
+    with open(os.path.join(voc07_path, 'ImageSets\\Main\\val.txt')) as f:
         ids = f.read().splitlines()
 
     for id in ids:
@@ -156,14 +156,21 @@ def calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, tr
     :param true_difficulties: list of tensors, one tensor for each image containing actual objects' difficulty (0 or 1)
     :return: list of average precisions for all classes, mean average precision (mAP)
     """
+
+    print("det_boxes:",det_boxes[0].shape)  # (top_n objects, 4 positions)
+    print("det_labels",det_labels[0].shape)  # (n labels)
+    print("det_scores",det_scores[0].shape)  # (n label scores)
+    print("true_boxes",true_boxes[0].shape)  # (N true objects, 4 positions)
+    print("true_labels",true_labels[0].shape) #( N label)
     assert len(det_boxes) == len(det_labels) == len(det_scores) == len(true_boxes) == len(
         true_labels) == len(
         true_difficulties)  # these are all lists of tensors of the same length, i.e. number of images
-    n_classes = len(label_map)
+    n_classes = len(dataset_labels)
+    print("n_classess:",n_classes)
 
     # Store all (true) objects in a single continuous tensor while keeping track of the image it is from
     true_images = list()
-    for i in range(len(true_labels)):
+    for i in range(len(true_labels)):  # loop n images
         true_images.extend([i] * true_labels[i].size(0))
     true_images = torch.LongTensor(true_images).to(
         device)  # (n_objects), n_objects is the total no. of objects across all images
@@ -171,6 +178,9 @@ def calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, tr
     true_labels = torch.cat(true_labels, dim=0)  # (n_objects)
     true_difficulties = torch.cat(true_difficulties, dim=0)  # (n_objects)
 
+    print("true images:",true_images.shape)
+    print(true_boxes.shape)
+    print(true_labels.shape)
     assert true_images.size(0) == true_boxes.size(0) == true_labels.size(0)
 
     # Store all detections in a single continuous tensor while keeping track of the image it is from
@@ -185,8 +195,9 @@ def calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, tr
     assert det_images.size(0) == det_boxes.size(0) == det_labels.size(0) == det_scores.size(0)
 
     # Calculate APs for each class (except background)
-    average_precisions = torch.zeros((n_classes - 1), dtype=torch.float)  # (n_classes - 1)
-    for c in range(1, n_classes):
+    average_precisions = torch.zeros((n_classes), dtype=torch.float)  # (n_classes - 1)
+    for c in range(1, n_classes+1):
+        print("class number:",c)
         # Extract only objects with this class
         true_class_images = true_images[true_labels == c]  # (n_class_objects)
         true_class_boxes = true_boxes[true_labels == c]  # (n_class_objects, 4)
@@ -238,14 +249,13 @@ def calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, tr
             # If the maximum overlap is greater than the threshold of 0.5, it's a match
             if max_overlap.item() > 0.5:
                 # If the object it matched with is 'difficult', ignore it
-                if object_difficulties[ind] == 0:
-                    # If this object has already not been detected, it's a true positive
-                    if true_class_boxes_detected[original_ind] == 0:
-                        true_positives[d] = 1
-                        true_class_boxes_detected[original_ind] = 1  # this object has now been detected/accounted for
-                    # Otherwise, it's a false positive (since this object is already accounted for)
-                    else:
-                        false_positives[d] = 1
+                # If this object has already not been detected, it's a true positive
+                if true_class_boxes_detected[original_ind] == 0:
+                    true_positives[d] = 1
+                    true_class_boxes_detected[original_ind] = 1  # this object has now been detected/accounted for
+                # Otherwise, it's a false positive (since this object is already accounted for)
+                else:
+                    false_positives[d] = 1
             # Otherwise, the detection occurs in a different location than the actual object, and is a false positive
             else:
                 false_positives[d] = 1
@@ -266,13 +276,13 @@ def calculate_mAP(det_boxes, det_labels, det_scores, true_boxes, true_labels, tr
                 precisions[i] = cumul_precision[recalls_above_t].max()
             else:
                 precisions[i] = 0.
-        average_precisions[c - 1] = precisions.mean()  # c is in [1, n_classes - 1]
+        average_precisions[c-1] = precisions.mean()  # c is in [1, n_classes - 1]
 
     # Calculate Mean Average Precision (mAP)
     mean_average_precision = average_precisions.mean().item()
 
     # Keep class-wise average precisions in a dictionary
-    average_precisions = {rev_label_map[c + 1]: v for c, v in enumerate(average_precisions.tolist())}
+    average_precisions = {rev_label_map[c+1 ]: v for c, v in enumerate(average_precisions.tolist())}
 
     return average_precisions, mean_average_precision
 
@@ -312,7 +322,8 @@ def cxcy_to_gcxgcy(cxcy, priors_cxcy):
     :param priors_cxcy: prior boxes with respect to which the encoding must be performed, a tensor of size (n_priors, 4)
     :return: encoded bounding boxes, a tensor of size (n_priors, 4)
     """
-
+    cxcy=cxcy.to(device)
+    priors_cxcy=priors_cxcy.to(device)
     # The 10 and 5 below are referred to as 'variances' in the original Caffe repo, completely empirical
     # They are for some sort of numerical conditioning, for 'scaling the localization gradient'
     # See https://github.com/weiliu89/caffe/issues/155
@@ -346,6 +357,8 @@ def find_intersection(set_1, set_2):
     :return: intersection of each of the boxes in set 1 with respect to each of the boxes in set 2, a tensor of dimensions (n1, n2)
     """
 
+    set_1=set_1.to(device)
+    set_2=set_2.to(device)
     # PyTorch auto-broadcasts singleton dimensions
     lower_bounds = torch.max(set_1[:, :2].unsqueeze(1), set_2[:, :2].unsqueeze(0))  # (n1, n2, 2)
     upper_bounds = torch.min(set_1[:, 2:].unsqueeze(1), set_2[:, 2:].unsqueeze(0))  # (n1, n2, 2)
@@ -361,7 +374,8 @@ def find_jaccard_overlap(set_1, set_2):
     :param set_2: set 2, a tensor of dimensions (n2, 4)
     :return: Jaccard Overlap of each of the boxes in set 1 with respect to each of the boxes in set 2, a tensor of dimensions (n1, n2)
     """
-
+    set_1=set_1.to(device)
+    set_2=set_2.to(device)
     # Find intersections
     intersection = find_intersection(set_1, set_2)  # (n1, n2)
 
@@ -580,7 +594,7 @@ def photometric_distort(image):
     return new_image
 
 
-def transform(image, boxes, labels, difficulties, split):
+def transform(image, depth_image,boxes, labels, difficulties, split):
     """
     Apply the transformations above.
 
@@ -593,10 +607,18 @@ def transform(image, boxes, labels, difficulties, split):
     """
     assert split in {'TRAIN', 'TEST'}
 
+    from torchvision import transforms
+
     # Mean and standard deviation of ImageNet data that our base VGG from torchvision was trained on
     # see: https://pytorch.org/docs/stable/torchvision/models.html
     mean = [0.485, 0.456, 0.406]
     std = [0.229, 0.224, 0.225]
+    depth_transform=transforms.Compose(
+        [
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5],std=[1.])
+            ]
+    )
 
     new_image = image
     new_boxes = boxes
@@ -616,8 +638,8 @@ def transform(image, boxes, labels, difficulties, split):
             new_image, new_boxes = expand(new_image, boxes, filler=mean)
 
         # Randomly crop image (zoom in)
-        new_image, new_boxes, new_labels, new_difficulties = random_crop(new_image, new_boxes, new_labels,
-                                                                         new_difficulties)
+        # new_image, new_boxes, new_labels, new_difficulties = random_crop(new_image, new_boxes, new_labels,
+        #                                                                  new_difficulties)
 
         # Convert Torch tensor to PIL image
         new_image = FT.to_pil_image(new_image)
@@ -631,11 +653,13 @@ def transform(image, boxes, labels, difficulties, split):
 
     # Convert PIL image to Torch tensor
     new_image = FT.to_tensor(new_image)
+    # depth_image=FT.to_tensor(depth_image)
+    depth_image=depth_transform(depth_image)
 
     # Normalize by mean and standard deviation of ImageNet data that our base VGG was trained on
     new_image = FT.normalize(new_image, mean=mean, std=std)
 
-    return new_image, new_boxes, new_labels, new_difficulties
+    return new_image,depth_image, new_boxes, new_labels, new_difficulties
 
 
 def adjust_learning_rate(optimizer, scale):
@@ -666,7 +690,7 @@ def accuracy(scores, targets, k):
     return correct_total.item() * (100.0 / batch_size)
 
 
-def save_checkpoint(epoch, epochs_since_improvement, model, optimizer, loss, best_loss, is_best):
+def save_checkpoint(epoch, epochs_since_improvement, model, optimizer, loss, best_loss, is_best,depth_mode):
     """
     Save model checkpoint.
 
@@ -688,7 +712,10 @@ def save_checkpoint(epoch, epochs_since_improvement, model, optimizer, loss, bes
     torch.save(state, filename)
     # If this checkpoint is the best so far, store a copy so it doesn't get overwritten by a worse checkpoint
     if is_best:
-        torch.save(state, 'BEST_' + filename)
+        if depth_mode is True:
+            torch.save(state,'BEST_RGBD_'+filename)
+        else:
+            torch.save(state, 'BEST_' + filename)
 
 
 class AverageMeter(object):

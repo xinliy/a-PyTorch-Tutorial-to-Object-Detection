@@ -16,7 +16,32 @@ class VGGBase(nn.Module):
     def __init__(self):
         super(VGGBase, self).__init__()
 
+        # self.depth_conv1_1=nn.Conv2d(1,64,kernel_size=3,padding=1)
+        # self.depth_conv1_2=nn.Conv2d(64,128,kernel_size=3,padding=1)
+        # self.depth_pool1=nn.MaxPool2d(kernel_size=2,stride=2)
+        # self.depth_conv2_1=nn.Conv2d(128,256,kernel_size=3,padding=1)
+        # self.depth_pool2=nn.MaxPool2d(kernel_size=2,stride=2)
+        # self.depth_conv3_1=nn.Conv2d(256,256,kernel_size=3,padding=1)
+        # self.depth_pool3=nn.MaxPool2d(kernel_size=2,stride=2,ceil_mode=True)
+        # self.depth_merge_conv=nn.Conv2d(256+512,512,kernel_size=3,padding=1)
+
+        ##   Depth FPN structure ##
+        self.fpn_up1=nn.Conv2d(1,32,kernel_size=3,padding=1)
+        self.fpn_up2=nn.Conv2d(32,64,kernel_size=3,stride=2,padding=1)
+        self.fpn_up3=nn.Conv2d(64,128,kernel_size=3,stride=2,padding=1)
+        self.fpn_up4=nn.Conv2d(128,256,kernel_size=3,stride=2,padding=1)
+        self.fpn_up5=nn.Conv2d(256,256,kernel_size=3,stride=2,padding=1)
+        self.fpn_up6=nn.Conv2d(256,256,kernel_size=3,stride=2,padding=1)
+        self.toplayer=nn.Conv2d(256,128,kernel_size=3,padding=1)
+        self.fpn_down5=nn.Conv2d(256,128,kernel_size=1,stride=1,padding=0)
+        self.fpn_down4=nn.Conv2d(256,128,kernel_size=1,stride=1,padding=0)
+        self.merge_p2=nn.Conv2d(384+512,512,kernel_size=3,stride=1,padding=1)
+        self.merge_p1=nn.Conv2d(256+1024,1024,kernel_size=3,stride=1,padding=1)
+
+
         # Standard convolutional layers in VGG16
+        # self.depth_resize_conv1=nn.Conv2d(3,3,kernel_size=(3,2),stride=(3,2))
+        # self.depth_resize_upsample=nn.Upsample(scale_factor=1.25)
         self.conv1_1 = nn.Conv2d(3, 64, kernel_size=3, padding=1)  # stride = 1, by default
         self.conv1_2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
@@ -48,6 +73,8 @@ class VGGBase(nn.Module):
         # Load pretrained layers
         self.load_pretrained_layers()
 
+        self.flag_depth=False
+
     def forward(self, image):
         """
         Forward propagation.
@@ -55,6 +82,43 @@ class VGGBase(nn.Module):
         :param image: images, a tensor of dimensions (N, 3, 300, 300)
         :return: lower-level feature maps conv4_3 and conv7
         """
+
+        if image.shape[1]==4:
+            print("Enter Depth mode.")
+            self.flag_depth=True
+            depth_image=image[:,3,...].unsqueeze(1)
+            image=image[:,:3,...]
+            # d=F.relu(self.depth_conv1_1(depth_image))
+            # d=F.relu(self.depth_conv1_2(d))
+            # d=self.depth_pool1(d)
+            # d=F.relu(self.depth_conv2_1(d))
+            # d=F.relu(self.depth_pool2(d))
+            # d=F.relu(self.depth_conv3_1(d))
+            # d=self.depth_pool3(d)
+            # print(d.shape)
+            fpn1=F.relu(self.fpn_up1(depth_image))  # (N,out_channels(20),300,300)
+            # print('fpn1 shape:',fpn1.shape)
+            fpn2=F.relu(self.fpn_up2(fpn1))  # (N,out_channels(40),100,100)
+            # print('fpn2 shape:',fpn2.shape)
+            fpn3=F.relu(self.fpn_up3(fpn2))  # (N, out_channels(80),34,34)
+            # print('fpn3 shape:',fpn3.shape)
+            fpn4=F.relu(self.fpn_up4(fpn3))  # (N,out_channels(160),12,12)
+            # print('fpn4 shape:',fpn4.shape)
+            fpn5=F.relu(self.fpn_up5(fpn4))
+            # print('fpn5 shape:',fpn5.shape)
+            fpn6=F.relu(self.fpn_up6(fpn5))
+            # print('fpn6 shape:',fpn6.shape)
+            fpnTop=F.relu(self.toplayer(fpn4)) # (N, out_channels(80),10,10)
+            # print('fpnTop shape:',fpnTop.shape)
+            p1=torch.cat((F.upsample(fpnTop,size=(19,19),mode='bilinear'),self.fpn_down5(fpn5)),dim=1) # (N, 256, 19, 19)
+            #
+            # print('p1',p1.shape)
+            p2=torch.cat((F.upsample(p1,(38,38),mode='bilinear'),self.fpn_down4(fpn4)),dim=1)   # (N, 384,38,38)
+            # print('p2',p2.shape)
+
+        # out=self.depth_resize_conv1(image)
+        # out=self.depth_resize_upsample(out)
+        # print(out.shape)
         out = F.relu(self.conv1_1(image))  # (N, 64, 300, 300)
         out = F.relu(self.conv1_2(out))  # (N, 64, 300, 300)
         out = self.pool1(out)  # (N, 64, 150, 150)
@@ -71,7 +135,16 @@ class VGGBase(nn.Module):
         out = F.relu(self.conv4_1(out))  # (N, 512, 38, 38)
         out = F.relu(self.conv4_2(out))  # (N, 512, 38, 38)
         out = F.relu(self.conv4_3(out))  # (N, 512, 38, 38)
-        conv4_3_feats = out  # (N, 512, 38, 38)
+        if self.flag_depth is True:
+            # merge_out=torch.cat((out,d),dim=1)
+            # merge_out=F.relu(self.depth_merge_conv(merge_out))
+            # conv4_3_feats=merge_out
+            merge_out=torch.cat((out,p2),dim=1)
+            merge_out=F.relu(self.merge_p2(merge_out))
+            conv4_3_feats=merge_out
+
+        else:
+            conv4_3_feats = out  # (N, 512, 38, 38)
         out = self.pool4(out)  # (N, 512, 19, 19)
 
         out = F.relu(self.conv5_1(out))  # (N, 512, 19, 19)
@@ -81,7 +154,11 @@ class VGGBase(nn.Module):
 
         out = F.relu(self.conv6(out))  # (N, 1024, 19, 19)
 
-        conv7_feats = F.relu(self.conv7(out))  # (N, 1024, 19, 19)
+        if self.flag_depth is True:
+            conv7_feats=F.relu(self.merge_p1(torch.cat((out,p1),dim=1)))
+        else:
+            conv7_feats = F.relu(self.conv7(out))  # (N, 1024, 19, 19)
+
 
         # Lower-level feature maps
         return conv4_3_feats, conv7_feats
@@ -97,6 +174,7 @@ class VGGBase(nn.Module):
         # Current state of base
         state_dict = self.state_dict()
         param_names = list(state_dict.keys())
+        param_names=[i for i in param_names if i.startswith("conv")]
 
         # Pretrained VGG base
         pretrained_state_dict = torchvision.models.vgg16(pretrained=True).state_dict()
@@ -316,7 +394,6 @@ class PredictionConvolutions(nn.Module):
         locs = torch.cat([l_conv4_3, l_conv7, l_conv8_2, l_conv9_2, l_conv10_2, l_conv11_2], dim=1)  # (N, 8732, 4)
         classes_scores = torch.cat([c_conv4_3, c_conv7, c_conv8_2, c_conv9_2, c_conv10_2, c_conv11_2],
                                    dim=1)  # (N, 8732, n_classes)
-
         return locs, classes_scores
 
 
@@ -399,9 +476,9 @@ class SSD300(nn.Module):
 
         prior_boxes = []
 
-        for k, fmap in enumerate(fmaps):
-            for i in range(fmap_dims[fmap]):
-                for j in range(fmap_dims[fmap]):
+        for k, fmap in enumerate(fmaps): # every conv
+            for i in range(fmap_dims[fmap]): # every width
+                for j in range(fmap_dims[fmap]): # every height
                     cx = (j + 0.5) / fmap_dims[fmap]
                     cy = (i + 0.5) / fmap_dims[fmap]
 
@@ -610,6 +687,9 @@ class MultiBoxLoss(nn.Module):
 
         # Localization loss is computed only over positive (non-background) priors
         loc_loss = self.smooth_l1(predicted_locs[positive_priors], true_locs[positive_priors])  # (), scalar
+        if loc_loss==float('inf'):
+            print("infinite found!")
+
 
         # Note: indexing with a torch.uint8 (byte) tensor flattens the tensor when indexing is across multiple dimensions (N & 8732)
         # So, if predicted_locs has the shape (N, 8732, 4), predicted_locs[positive_priors] will have (total positives, 4)
@@ -643,7 +723,8 @@ class MultiBoxLoss(nn.Module):
 
         # As in the paper, averaged over positive priors only, although computed over both positive and hard-negative priors
         conf_loss = (conf_loss_hard_neg.sum() + conf_loss_pos.sum()) / n_positives.sum().float()  # (), scalar
-
+        print("conf_loss:",conf_loss)
+        print("loc_loss:",loc_loss)
         # TOTAL LOSS
 
         return conf_loss + self.alpha * loc_loss

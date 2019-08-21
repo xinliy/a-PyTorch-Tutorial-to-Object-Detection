@@ -3,10 +3,11 @@ from torch.utils.data import Dataset
 import json
 import os
 from PIL import Image
+import numpy as np
 from utils import transform
 
 
-class PascalVOCDataset(Dataset):
+class ImageDataset(Dataset):
     """
     A PyTorch Dataset class to be used in a PyTorch DataLoader to create batches.
     """
@@ -29,6 +30,8 @@ class PascalVOCDataset(Dataset):
             self.images = json.load(j)
         with open(os.path.join(data_folder, self.split + '_objects.json'), 'r') as j:
             self.objects = json.load(j)
+        with open(os.path.join(data_folder,self.split+"_depth_images.json"),'r') as j:
+            self.depth_images=json.load(j)
 
         assert len(self.images) == len(self.objects)
 
@@ -36,6 +39,9 @@ class PascalVOCDataset(Dataset):
         # Read image
         image = Image.open(self.images[i], mode='r')
         image = image.convert('RGB')
+        origin_image=image
+        depth_image=Image.open(self.depth_images[i])
+        depth_image=depth_image.convert("L")
 
         # Read objects in this image (bounding boxes, labels, difficulties)
         objects = self.objects[i]
@@ -43,16 +49,10 @@ class PascalVOCDataset(Dataset):
         labels = torch.LongTensor(objects['labels'])  # (n_objects)
         difficulties = torch.ByteTensor(objects['difficulties'])  # (n_objects)
 
-        # Discard difficult objects, if desired
-        if not self.keep_difficult:
-            boxes = boxes[1 - difficulties]
-            labels = labels[1 - difficulties]
-            difficulties = difficulties[1 - difficulties]
-
         # Apply transformations
-        image, boxes, labels, difficulties = transform(image, boxes, labels, difficulties, split=self.split)
+        image, depth_image,boxes, labels, difficulties = transform(image,depth_image, boxes, labels, difficulties,self.split)
 
-        return image, boxes, labels, difficulties
+        return image, depth_image,boxes, labels, difficulties,origin_image
 
     def __len__(self):
         return len(self.images)
@@ -70,16 +70,22 @@ class PascalVOCDataset(Dataset):
         """
 
         images = list()
+        depth_images=list()
         boxes = list()
         labels = list()
         difficulties = list()
+        origin_images=list()
 
         for b in batch:
             images.append(b[0])
-            boxes.append(b[1])
-            labels.append(b[2])
-            difficulties.append(b[3])
+            depth_images.append(b[1])
+            boxes.append(b[2])
+            labels.append(b[3])
+            difficulties.append(b[4])
+            origin_images.append(b[5])
+
 
         images = torch.stack(images, dim=0)
+        depth_images=torch.stack(depth_images,dim=0)
 
-        return images, boxes, labels, difficulties  # tensor (N, 3, 300, 300), 3 lists of N tensors each
+        return images,depth_images, boxes, labels, difficulties,origin_images # tensor (N, 3, 300, 300), 3 lists of N tensors each
